@@ -1,6 +1,6 @@
 # OmniSort AI
 
-An AI-powered file organizer that watches multiple folders simultaneously and sorts every file into the right place — automatically. Built privacy-first: sensitive files are detected locally and never sent to an external API.
+An AI-powered file organizer that watches multiple folders simultaneously and sorts every file into the right place — automatically. Define custom folders for your own categories (Bank, Tax, Work, ML Notes). Built privacy-first: sensitive files are detected locally and never sent to an external API.
 
 ---
 
@@ -17,9 +17,9 @@ Extract text
      ▼
 Check content for PII (on-device, regex)
      │
-     ├── PII found (filename OR content) ──► route to Sensitive/   ← LLM never called
+     ├── PII found (filename OR content) ──► Sensitive/   ← LLM never called
      │
-     └── No PII ──► keyword NLP ──► LLM fallback (only if needed)
+     └── No PII ──► custom rules ──► keyword NLP ──► LLM fallback (only if needed)
 ```
 
 This is a hard guarantee, not a configuration option. The PII gate runs synchronously before any network call is attempted.
@@ -34,10 +34,11 @@ Drop a file into any watched folder (`~/Downloads`, `~/Desktop`, `~/Documents`, 
 2. **Checks the filename for PII** — catches `john_SSN_123456789.pdf` before it's even opened
 3. Extracts text — OCR for images, PDF parser for PDFs, **OCR fallback for scanned PDFs**
 4. **Checks content for PII** — emails, phone numbers, SSNs detected on-device
-5. Classifies the file — keyword NLP, then GPT-4o-mini only if no PII found
-6. Checks for duplicates — SHA-256 hash with per-hash lock preventing concurrent misses
-7. Moves the file — DB write only happens after the move succeeds
-8. Logs to SQLite and pushes a live WebSocket event to the dashboard
+5. **Runs custom rules** — your own keyword-to-folder mappings, free, no API call
+6. Classifies the file — keyword NLP, then GPT-4o-mini only if no rule matched and no PII
+7. Checks for duplicates — SHA-256 hash with per-hash lock preventing concurrent misses
+8. Moves the file — DB write only happens after the move succeeds
+9. Logs to SQLite and pushes a live WebSocket event to the dashboard
 
 ---
 
@@ -59,10 +60,43 @@ Drop a file into any watched folder (`~/Downloads`, `~/Desktop`, `~/Documents`, 
 ├── Archives/
 ├── Sensitive/        ← PII in filename OR content — classified on-device only
 ├── Duplicates/       ← same SHA-256 as a previously seen file
-└── Other/
+├── Other/
+│
+│   ── custom folders (created automatically from your rules) ──
+├── Bank/             ← matches "bank statement", "HDFC", "transaction history"
+├── Tax/              ← matches "form 16", "income tax", "assessment year"
+├── Work/             ← matches "standup", "sprint", "quarterly review"
+└── Health/           ← matches "prescription", "blood report", "diagnosis"
 ```
 
-Routing priority: **Sensitive > Duplicate > Category**
+Routing priority: **Sensitive > Duplicate > Custom Rule > NLP/LLM Category**
+
+---
+
+## Custom rules
+
+Define your own folder → keyword mappings in `configs/settings.yaml`. No code change needed — edit the file and restart.
+
+```yaml
+custom_rules:
+  - folder: Bank
+    keywords: ["bank statement", "account number", "transaction history", "HDFC", "ICICI", "SBI"]
+
+  - folder: Tax
+    keywords: ["form 16", "itr", "income tax", "pan card", "assessment year", "tds certificate"]
+
+  - folder: ML Notes
+    keywords: ["neural network", "gradient descent", "backpropagation", "loss function", "epoch"]
+
+  - folder: Client XYZ
+    keywords: ["XYZ Corp", "project apollo", "statement of work"]
+```
+
+Rules match against **both the filename and the extracted text**. The first matching rule wins. Folders are created automatically if they don't exist.
+
+**Priority over built-in categories** — if a rule matches, NLP and the LLM are skipped entirely. Custom rules cost nothing.
+
+**PII always wins** — a bank statement containing an SSN goes to `Sensitive/`, not `Bank/`.
 
 ---
 
@@ -93,8 +127,12 @@ FileWatcher._process_file()
      ├── TextProcessor                  plain read → text
      │
      ├── SensitiveDetector (content)    runs before any network call
-     │   └── filename PII OR content PII? ──────────────────────────────► Sensitive/
+     │   └── PII found? ───────────────────────────────────────────────────► Sensitive/
      │   └── No PII ──► continue
+     │
+     ├── RulesEngine                    user-defined keyword → folder mappings
+     │   └── rule matched? ────────────────────────────────────────────────► Custom folder/
+     │   └── no match ──► continue
      │
      ├── classify_document()            keyword NLP → Invoices / Resumes / Legal
      │   └── still "Documents"? ──────► LLMClassifier (GPT-4o-mini)
@@ -125,20 +163,21 @@ FileWatcher._process_file()
 
 **Stage 0 — Filename PII gate (runs before file is opened)**
 
-The filename is scanned for email, phone, and SSN patterns. A file named `john_SSN_123456789.pdf` is routed to `Sensitive/` immediately — the file is never read.
+Filename scanned for email, phone, SSN. A file named `john_SSN_123456789.pdf` goes to `Sensitive/` immediately — file is never read.
 
-**Stage 1 — Content PII gate (on-device, always runs before NLP/LLM)**
+**Stage 1 — Content PII gate (on-device, before NLP/LLM)**
 
-Extracted text is scanned for the same patterns. If any match:
-- File is routed to `Sensitive/`
-- `is_sensitive = 1` stored in DB
-- No further network calls made — content stays on the machine
+Extracted text scanned for the same patterns. Match → `Sensitive/`, `is_sensitive = 1`, no further network calls.
 
 **Stage 1a — Scanned PDF OCR fallback**
 
-If `PyPDF2` returns empty text (image-only PDF with no text layer), PyMuPDF renders the first page at 150 DPI and pytesseract extracts text from the rendered image. Scanned medical reports, tax forms, and contracts are no longer silently dropped into `Documents/`.
+If PyPDF2 returns empty text (image-only PDF), PyMuPDF renders the first page at 150 DPI and pytesseract extracts text. Scanned medical reports, tax forms, and contracts are no longer silently dropped into `Documents/`.
 
-**Stage 2 — Keyword NLP (on-device, zero latency)**
+**Stage 2 — Custom rules (on-device, zero latency, zero cost)**
+
+User-defined keyword mappings from `settings.yaml` are checked against filename + content. First match wins → file goes to the custom folder, NLP and LLM are skipped entirely.
+
+**Stage 3 — Keyword NLP (on-device, zero latency)**
 
 | Keywords | Category |
 |---|---|
@@ -146,9 +185,9 @@ If `PyPDF2` returns empty text (image-only PDF with no text layer), PyMuPDF rend
 | `resume`, `curriculum vitae`, `work experience`, `references` | Resumes |
 | `contract`, `agreement`, `terms and conditions`, `whereas` | Legal |
 
-**Stage 3 — LLM fallback (GPT-4o-mini)**
+**Stage 4 — LLM fallback (GPT-4o-mini)**
 
-Only reached when Stage 0 + Stage 1 found no PII **and** Stage 2 returned the generic `"Documents"` label. Sends the first 2 000 characters of extracted text and returns one of:
+Only reached when Stages 0–3 all passed without a match. Sends first 2 000 characters, returns one of:
 
 `Medical` · `Financial` · `Academic` · `Documents` · `Other`
 
@@ -164,15 +203,15 @@ PII is checked in two places — filename first, then content.
 | Phone | `555-867-5309` |
 | SSN | `123-45-6789` |
 
-Detection runs via `re` — no model, no network, no latency. A match in either the filename or the extracted text triggers the PII gate and prevents any LLM call.
+Detection runs via `re` — no model, no network, no latency. A match in either the filename or extracted text triggers the PII gate and prevents any LLM call.
 
 ---
 
 ## Duplicate detection
 
-Every file is SHA-256 hashed (4 KB streaming chunks). To prevent a race condition where two identical files processed simultaneously both pass the duplicate check before either writes to the database, the entire sequence of **check → move → DB write** runs inside a per-hash `threading.Lock`. Only one thread can hold the lock for a given hash at a time.
+Every file is SHA-256 hashed (4 KB streaming chunks). To prevent a race condition where two identical files processed simultaneously both pass the duplicate check before either writes to the database, the entire sequence of **check → move → DB write** runs inside a per-hash `threading.Lock`.
 
-The DB write is isolated in its own `try/except` — if it fails, the already-sorted file is not lost, and the error is logged.
+The DB write is isolated in its own `try/except` — if it fails, the already-sorted file is not lost.
 
 ---
 
@@ -188,8 +227,9 @@ The DB write is isolated in its own `try/except` — if it fails, the already-so
 | Scanned PDF OCR | `PyMuPDF` — renders pages to images for pytesseract |
 | DOCX parsing | `python-docx` |
 | PII detection | `re` — on-device regex on filename + content, before any network call |
+| Custom rules | Keyword engine — user-defined folder mappings, zero cost |
 | NLP classification | Keyword matching — zero-dependency, zero-latency |
-| LLM classification | OpenAI `gpt-4o-mini` — only for non-sensitive, ambiguous files |
+| LLM classification | OpenAI `gpt-4o-mini` — only for non-sensitive, unmatched files |
 | Duplicate detection | SHA-256 + per-hash threading lock |
 | Observability | In-process metrics singleton (`metrics.py`) |
 | Database | SQLite via `sqlite3` |
@@ -209,6 +249,8 @@ omnisort-ai/
 │   ├── classifier/
 │   │   ├── image_classifier.py          PIL classifier + keyword NLP
 │   │   └── llm_classifier.py            GPT-4o-mini fallback (PII-gated)
+│   ├── rules/
+│   │   └── rules_engine.py              user-defined keyword → folder rules
 │   ├── ocr/
 │   │   └── ocr_extractor.py             pytesseract + PyMuPDF scanned-PDF fallback
 │   ├── processor/
@@ -236,10 +278,10 @@ omnisort-ai/
 │   ├── app.html                         dashboard UI
 │   └── app.js                           WebSocket client + DOM updates
 ├── configs/
-│   └── settings.yaml                    watch_folders (list), output_folder, ports
+│   └── settings.yaml                    watch_folders, custom_rules, output_folder, ports
 ├── tests/
 │   ├── test_classifier.py               16 unit tests — image + document classifier
-│   └── test_watcher.py                  26 integration tests — full pipeline
+│   └── test_watcher.py                  28 integration tests — full pipeline + custom rules
 └── backend/requirements.txt
 ```
 
@@ -288,7 +330,7 @@ echo 'export OPENAI_API_KEY="sk-..."' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-> The key is only used when a file reaches Stage 3 — non-sensitive, ambiguous documents only.
+> The key is only used when a file reaches Stage 4 — non-sensitive, unmatched, ambiguous documents only.
 
 ---
 
@@ -358,15 +400,13 @@ All endpoints served at `http://127.0.0.1:8000`.
 }
 ```
 
-`files_per_min` is a live sliding 60-second window. `avg_classification_ms` covers the full NLP + optional LLM block per file. `avg_llm_ms` measures only the GPT-4o-mini call itself.
-
 ### WebSocket event shape
 
 ```json
 {
   "type": "file_processed",
-  "filename": "invoice_march.pdf",
-  "category": "Invoices",
+  "filename": "hdfc_march.pdf",
+  "category": "Bank",
   "is_duplicate": 0,
   "is_sensitive": 0
 }
@@ -403,19 +443,29 @@ AirDrop writes a `.part` temp file then renames it to the final name. OmniSort c
 `configs/settings.yaml`:
 
 ```yaml
-watch_folders:            # all folders OmniSort monitors — add as many as you need
+watch_folders:            # folders to monitor — add as many as you need
   - ~/Downloads
   - ~/Desktop
   - ~/Documents
+
 output_folder: ~/Downloads/OmniSort
+
+custom_rules:             # keyword → folder mappings, checked before NLP/LLM
+  - folder: Bank
+    keywords: ["bank statement", "account number", "HDFC", "ICICI", "SBI"]
+  - folder: Tax
+    keywords: ["form 16", "itr", "income tax", "assessment year"]
+  - folder: Work
+    keywords: ["standup", "sprint", "jira", "quarterly review"]
+  - folder: Health
+    keywords: ["prescription", "blood report", "diagnosis", "pathology"]
+
 tesseract_path: /usr/local/bin/tesseract
 api_host: 127.0.0.1
 api_port: 8000
 log_file: omnisort.log
 file_ready_timeout: 30
 ```
-
-OmniSort spins up one watchdog observer per folder. Folders that don't exist are skipped with a log warning — no crash. Add any folder you download files to; each is watched independently with the same pipeline.
 
 ---
 
@@ -427,12 +477,12 @@ python -m pytest tests/ -v
 
 ```
 tests/test_classifier.py   — 16 tests   (ImageClassifier + classify_document)
-tests/test_watcher.py      — 26 tests   (full pipeline integration)
+tests/test_watcher.py      — 28 tests   (full pipeline + custom rules)
 ─────────────────────────────────────────
-42 tests, 0 failures
+44 tests, 0 failures
 ```
 
-Integration tests cover: image sorting, screenshot detection (filename + resolution), PDF → Invoices / Resumes / Documents, TXT, unsupported extensions → Other, PII detection → Sensitive, duplicate detection → Duplicates, concurrent processing deduplication, DB record creation, SHA-256 storage, output-folder re-processing guard.
+Integration tests cover: image sorting, screenshot detection, PDF → Invoices / Resumes / Documents, TXT, unsupported → Other, PII detection → Sensitive, PII overrides custom rule, custom rule → custom folder, duplicate detection, concurrent deduplication, DB record creation, SHA-256 storage, output-folder re-processing guard.
 
 ---
 

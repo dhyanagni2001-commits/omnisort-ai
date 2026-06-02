@@ -98,11 +98,14 @@ def env(tmp_path, monkeypatch):
     from backend.organizer.file_organizer import FileOrganizer
     from backend.logger.logger import Logger
 
+    from backend.rules.rules_engine import RulesEngine
+
     class _StubLLMClassifier:
         def classify(self, text):
             return "Documents"
 
     watcher.image_classifier = ImageClassifier()
+    watcher.rules_engine = RulesEngine([])
     watcher.llm_classifier = _StubLLMClassifier()
     watcher.ocr_extractor = OCRExtractor()
     watcher.pdf_processor = PDFProcessor()
@@ -323,3 +326,28 @@ class TestPipeline:
         watcher.on_created(event)
         records = db_records(db_path)
         assert len(records) == 0  # nothing processed
+
+    def test_custom_rule_routes_to_custom_folder(self, env):
+        from backend.rules.rules_engine import RulesEngine
+        watcher, watch_dir, out_dir, db_path = env
+        watcher.rules_engine = RulesEngine([
+            {"folder": "Bank", "keywords": ["account number", "transaction history"]}
+        ])
+        f = str(watch_dir / "statement.pdf")
+        write_pdf(f, "Account number: ACC-XYZ\nTransaction history for March 2025")
+        watcher._process_file(f)
+        cats = sorted_files(out_dir)
+        assert "statement.pdf" in cats.get("Bank", [])
+
+    def test_pii_overrides_custom_rule(self, env):
+        from backend.rules.rules_engine import RulesEngine
+        watcher, watch_dir, out_dir, db_path = env
+        watcher.rules_engine = RulesEngine([
+            {"folder": "Bank", "keywords": ["account number"]}
+        ])
+        f = str(watch_dir / "statement.pdf")
+        write_pdf(f, "Account number: 987654321\nSSN: 123-45-6789")
+        watcher._process_file(f)
+        cats = sorted_files(out_dir)
+        # PII (SSN) must win over the custom rule
+        assert "statement.pdf" in cats.get("Sensitive", [])

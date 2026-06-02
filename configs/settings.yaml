@@ -10,6 +10,16 @@ api_port: 8000
 log_file: omnisort.log
 file_ready_timeout: 30
 
+custom_rules:
+  - folder: Bank
+    keywords: ["bank statement", "account number", "transaction history", "HDFC", "ICICI", "SBI", "axis bank"]
+  - folder: Tax
+    keywords: ["form 16", "itr", "income tax", "pan card", "assessment year", "tds certificate"]
+  - folder: Work
+    keywords: ["standup", "sprint", "jira", "confluence", "quarterly review", "performance review"]
+  - folder: Health
+    keywords: ["prescription", "diagnosis", "blood report", "discharge summary", "pathology"]
+
 categories:
   - Photos
   - Screenshots

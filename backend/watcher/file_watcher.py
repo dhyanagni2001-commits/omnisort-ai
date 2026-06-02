@@ -11,6 +11,7 @@ from watchdog.events import FileSystemEventHandler
 
 from backend.classifier.image_classifier import ImageClassifier, classify_document
 from backend.classifier.llm_classifier import LLMClassifier
+from backend.rules.rules_engine import RulesEngine
 from backend.ocr.ocr_extractor import OCRExtractor
 from backend.processor.pdf_process import PDFProcessor
 from backend.processor.doc_process import DocxProcessor
@@ -93,6 +94,7 @@ class FileWatcher:
 
         self.image_classifier = ImageClassifier()
         self.llm_classifier = LLMClassifier()
+        self.rules_engine = RulesEngine(self.config.get("custom_rules", []))
         self.ocr_extractor = OCRExtractor(self.config.get("tesseract_path", "/usr/local/bin/tesseract"))
         self.pdf_processor = PDFProcessor()
         self.docx_processor = DocxProcessor()
@@ -254,11 +256,19 @@ class FileWatcher:
 
                 if file_type in ("pdf", "docx", "text"):
                     _clf_start = time.perf_counter()
-                    category = classify_document(text)
-                    if category == "Documents" and not sensitive_info:
-                        _llm_start = time.perf_counter()
-                        category = self.llm_classifier.classify(text)
-                        metrics.record_llm_call((time.perf_counter() - _llm_start) * 1000)
+                    # Custom rules run first — free, no API call
+                    rule_folder = (
+                        self.rules_engine.match(text, os.path.basename(real_path))
+                        if not sensitive_info else None
+                    )
+                    if rule_folder:
+                        category = rule_folder
+                    else:
+                        category = classify_document(text)
+                        if category == "Documents" and not sensitive_info:
+                            _llm_start = time.perf_counter()
+                            category = self.llm_classifier.classify(text)
+                            metrics.record_llm_call((time.perf_counter() - _llm_start) * 1000)
                     metrics.record_classification((time.perf_counter() - _clf_start) * 1000)
                     metadata["category"] = category
 
