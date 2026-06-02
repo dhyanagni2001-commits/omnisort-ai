@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OmniSort AI</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .titlebar {
+      height: 38px;
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      padding: 0 80px 0 16px;
+      background: #0f1117;
+      border-bottom: 1px solid #1e2330;
+      flex-shrink: 0;
+    }
+
+    .titlebar-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+      letter-spacing: 0.04em;
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      margin-right: 8px;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      width: 200px;
+      background: #0a0d14;
+      border-right: 1px solid #1e2330;
+      padding: 20px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .nav-item {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #64748b;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .nav-item:hover { background: #1e2330; color: #e2e8f0; }
+    .nav-item.active { background: #1e2330; color: #e2e8f0; }
+
+    .main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: #161b27;
+      border: 1px solid #1e2330;
+      border-radius: 10px;
+      padding: 20px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+
+    .stat-card.dup .stat-value { color: #f59e0b; }
+    .stat-card.sensitive .stat-value { color: #ef4444; }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+    }
+
+    .activity-feed {
+      background: #161b27;
+      border: 1px solid #1e2330;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 28px;
+    }
+
+    .feed-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #1e2330;
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+    }
+
+    .feed-list {
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
+    .feed-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #0f1117;
+      font-size: 13px;
+      animation: slideIn 0.2s ease;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .feed-icon { font-size: 16px; flex-shrink: 0; }
+    .feed-name { color: #e2e8f0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .feed-tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #1e2330;
+      color: #64748b;
+      flex-shrink: 0;
+    }
+    .feed-tag.sensitive { background: #450a0a; color: #f87171; }
+    .feed-tag.duplicate { background: #451a03; color: #fb923c; }
+
+    .files-table {
+      background: #161b27;
+      border: 1px solid #1e2330;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+    th {
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid #1e2330;
+      background: #0f1117;
+    }
+
+    td {
+      padding: 10px 16px;
+      border-bottom: 1px solid #0f1117;
+      color: #94a3b8;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    td:first-child { color: #e2e8f0; }
+
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #1e2330;
+      color: #64748b;
+    }
+    .badge.sensitive { background: #450a0a; color: #f87171; }
+    .badge.duplicate { background: #451a03; color: #fb923c; }
+    .badge.photos { background: #0c2244; color: #60a5fa; }
+    .badge.screenshots { background: #14213d; color: #818cf8; }
+    .badge.documents { background: #052e16; color: #4ade80; }
+    .badge.invoices { background: #1c1917; color: #fbbf24; }
+    .badge.resumes { background: #1a1033; color: #c084fc; }
+    .badge.videos { background: #0f172a; color: #38bdf8; }
+    .badge.audio { background: #1c0a2a; color: #e879f9; }
+    .badge.archives { background: #1c1917; color: #d97706; }
+
+    .empty {
+      text-align: center;
+      padding: 48px;
+      color: #475569;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="status-dot" id="statusDot"></span>
+    <span class="titlebar-title">OmniSort AI</span>
+  </div>
+
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-item active">Dashboard</div>
+      <div class="nav-item" id="openFolderBtn" onclick="openOutputFolder()">Open Folder</div>
+    </nav>
+
+    <main class="main">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Files Sorted</div>
+          <div class="stat-value" id="statTotal">0</div>
+        </div>
+        <div class="stat-card dup">
+          <div class="stat-label">Duplicates</div>
+          <div class="stat-value" id="statDuplicates">0</div>
+        </div>
+        <div class="stat-card sensitive">
+          <div class="stat-label">Sensitive</div>
+          <div class="stat-value" id="statSensitive">0</div>
+        </div>
+      </div>
+
+      <div class="section-title">Live Activity</div>
+      <div class="activity-feed">
+        <div class="feed-header">Recent events</div>
+        <div class="feed-list" id="feedList">
+          <div class="empty">Waiting for files...</div>
+        </div>
+      </div>
+
+      <div class="section-title">File History</div>
+      <div class="files-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Category</th>
+              <th>Status</th>
+              <th>Processed</th>
+            </tr>
+          </thead>
+          <tbody id="filesBody">
+            <tr><td colspan="4" style="text-align:center;padding:32px;color:#475569;">No files yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Runtime files
+database/omnisort.db
+*.log
+/tmp/omnisort.lock
+
+# Models (empty placeholders)
+models/
+
+# Node
+electron-app/node_modules/
+electron-app/package-lock.json
+
+# macOS
+.DS_Store
