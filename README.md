@@ -230,11 +230,13 @@ The DB write is isolated in its own `try/except` — if it fails, the already-so
 | Custom rules | Keyword engine — user-defined folder mappings, zero cost |
 | NLP classification | Keyword matching — zero-dependency, zero-latency |
 | LLM classification | OpenAI `gpt-4o-mini` — only for non-sensitive, unmatched files |
+| Semantic search | `fastembed` (ONNX, BAAI/bge-small-en-v1.5) — 384-dim embeddings, cosine similarity |
 | Duplicate detection | SHA-256 + per-hash threading lock |
 | Observability | In-process metrics singleton (`metrics.py`) |
 | Database | SQLite via `sqlite3` |
 | REST + WebSocket API | `FastAPI` + `uvicorn` |
 | Desktop UI | Electron (Node.js) |
+| Docker | Single-container image, volume mounts for watch/output folders |
 
 ---
 
@@ -267,10 +269,12 @@ omnisort-ai/
 │   │   └── file_organizer.py            shutil.move + collision handling
 │   ├── metrics/
 │   │   └── metrics.py                   thread-safe in-process metrics store
+│   ├── embeddings/
+│   │   └── embedding.py                 fastembed — 384-dim vectors, cosine similarity
 │   ├── database/
-│   │   └── db.py                        SQLite schema + CRUD
+│   │   └── db.py                        SQLite schema + CRUD (includes embedding column)
 │   ├── api/
-│   │   └── api.py                       FastAPI — /health /stats /files /metrics /ws
+│   │   └── api.py                       FastAPI — /health /stats /files /metrics /search /ws
 │   └── logger/
 │       └── logger.py                    file logger
 ├── electron-app/
@@ -282,6 +286,9 @@ omnisort-ai/
 ├── tests/
 │   ├── test_classifier.py               16 unit tests — image + document classifier
 │   └── test_watcher.py                  28 integration tests — full pipeline + custom rules
+├── Dockerfile
+├── docker-compose.yml
+├── DEMO.md
 └── backend/requirements.txt
 ```
 
@@ -383,6 +390,7 @@ All endpoints served at `http://127.0.0.1:8000`.
 | `GET` | `/api/stats` | Totals + per-category counts |
 | `GET` | `/api/files?limit=50&offset=0` | Paginated file history |
 | `GET` | `/api/metrics` | Runtime observability snapshot |
+| `GET` | `/api/search?q=...&limit=10` | Semantic search over processed files |
 | `WS` | `/ws` | Live event stream (JSON) |
 
 ### `/api/metrics` response
@@ -411,6 +419,49 @@ All endpoints served at `http://127.0.0.1:8000`.
   "is_sensitive": 0
 }
 ```
+
+---
+
+## Semantic search
+
+Every processed text document gets a 384-dimensional embedding stored in SQLite (BAAI/bge-small-en-v1.5 via `fastembed`, ONNX runtime — no PyTorch, works on Python 3.11+).
+
+```bash
+curl "localhost:8000/api/search?q=quarterly+revenue+report&limit=5"
+```
+
+Returns files ranked by cosine similarity to your query — finds the right document even when the filename is `final_FINAL_v3.pdf`. Images and binary-only files without extractable text degrade gracefully (no embedding stored, excluded from results).
+
+Sensitive files are still searched locally — their embeddings are stored the same way since the model runs on-device.
+
+---
+
+## Docker
+
+No Python install needed. Mount your watch folder and set your API key:
+
+```bash
+OPENAI_API_KEY=sk-... WATCH_FOLDER=~/Downloads docker-compose up
+```
+
+The API is available at `http://localhost:8000`. Files are sorted into a named Docker volume (`omnisort_output`). To mount the output to a local path instead, edit `docker-compose.yml`:
+
+```yaml
+volumes:
+  - /Users/you/OmniSort:/output
+```
+
+Build the image manually:
+
+```bash
+docker build -t omnisort-ai .
+```
+
+---
+
+## Demo
+
+See [DEMO.md](DEMO.md) for a step-by-step walkthrough of every feature with exact commands.
 
 ---
 

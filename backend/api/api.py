@@ -1,9 +1,11 @@
 import asyncio
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import db
 from backend.watcher.file_watcher import event_queue
 from backend.metrics.metrics import metrics
+from backend.embeddings.embedding import embed_text, cosine_similarity
 
 app = FastAPI(title="OmniSort AI", version="1.0.0")
 
@@ -35,6 +37,22 @@ def files(limit: int = 50, offset: int = 0):
 @app.get("/api/metrics")
 def get_metrics():
     return metrics.snapshot()
+
+@app.get("/api/search")
+def search(q: str, limit: int = 10):
+    """Semantic search over processed files using cosine similarity."""
+    query_vec = embed_text(q)
+    rows = db.get_files_with_embeddings()
+    results = []
+    for row in rows:
+        try:
+            file_vec = json.loads(row["embedding"]) if row.get("embedding") else []
+        except Exception:
+            file_vec = []
+        score = cosine_similarity(query_vec, file_vec)
+        results.append({**row, "score": score})
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  omnisort:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${WATCH_FOLDER:-~/Downloads}:/watch
+      - omnisort_output:/output
+      - omnisort_db:/app/database
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OMNISORT_WATCH_FOLDER=/watch
+      - OMNISORT_OUTPUT_FOLDER=/output
+    restart: unless-stopped
+
+volumes:
+  omnisort_output:
+  omnisort_db:

@@ -23,6 +23,7 @@ from backend.organizer.file_organizer import FileOrganizer
 from backend.database import db
 from backend.logger.logger import Logger
 from backend.metrics.metrics import metrics
+from backend.embeddings.embedding import embed_text
 
 SUPPORTED_EXTENSIONS = {
     "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"},
@@ -43,7 +44,12 @@ _lock_fd = None
 def _load_config():
     config_path = os.path.join(os.path.dirname(__file__), "../../configs/settings.yaml")
     with open(os.path.abspath(config_path)) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if os.environ.get("OMNISORT_WATCH_FOLDER"):
+        config["watch_folders"] = [os.environ["OMNISORT_WATCH_FOLDER"]]
+    if os.environ.get("OMNISORT_OUTPUT_FOLDER"):
+        config["output_folder"] = os.environ["OMNISORT_OUTPUT_FOLDER"]
+    return config
 
 def _acquire_lock():
     """Prevent multiple instances from running simultaneously."""
@@ -288,6 +294,8 @@ class FileWatcher:
                     is_duplicate = bool(metadata.get("is_duplicate"))
                     metrics.record_file_processed(is_duplicate=is_duplicate)
 
+                    import json as _json
+                    embedding = embed_text(metadata.get("text", ""))
                     record = {
                         "filename": os.path.basename(file_path),
                         "original_path": file_path,
@@ -299,6 +307,7 @@ class FileWatcher:
                         "is_duplicate": 1 if is_duplicate else 0,
                         "is_sensitive": 1 if metadata.get("is_sensitive") else 0,
                         "sensitive_types": metadata.get("sensitive_types", "[]"),
+                        "embedding": _json.dumps(embedding) if embedding else None,
                     }
 
                     # Fix 3: DB write isolated — failure logged but doesn't lose the sorted file

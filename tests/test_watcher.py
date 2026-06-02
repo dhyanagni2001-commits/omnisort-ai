@@ -68,6 +68,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", str(db_path))
     db.init_db()
 
+    # Prevent model download during tests — embeddings degrade gracefully to []
+    import backend.embeddings.embedding as _emb
+    monkeypatch.setattr(_emb, "embed_text", lambda text: [])
+
     # Build watcher pointed at our temp dirs
     watcher = FileWatcher.__new__(FileWatcher)
     watcher.config = {

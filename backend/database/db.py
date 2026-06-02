@@ -25,9 +25,15 @@ def init_db():
             is_duplicate INTEGER DEFAULT 0,
             is_sensitive INTEGER DEFAULT 0,
             sensitive_types TEXT,
+            embedding TEXT,
             processed_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Migrate existing DBs that pre-date the embedding column
+    try:
+        conn.execute("ALTER TABLE files ADD COLUMN embedding TEXT")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -35,9 +41,11 @@ def insert_file(record: dict):
     conn = get_connection()
     conn.execute("""
         INSERT INTO files (filename, original_path, destination_path, extension,
-            category, file_size, file_hash, is_duplicate, is_sensitive, sensitive_types)
+            category, file_size, file_hash, is_duplicate, is_sensitive,
+            sensitive_types, embedding)
         VALUES (:filename, :original_path, :destination_path, :extension,
-            :category, :file_size, :file_hash, :is_duplicate, :is_sensitive, :sensitive_types)
+            :category, :file_size, :file_hash, :is_duplicate, :is_sensitive,
+            :sensitive_types, :embedding)
     """, record)
     conn.commit()
     conn.close()
@@ -47,6 +55,15 @@ def get_files(limit=50, offset=0):
     rows = conn.execute(
         "SELECT * FROM files ORDER BY processed_at DESC LIMIT ? OFFSET ?",
         (limit, offset)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_files_with_embeddings():
+    """Return all files that have a stored embedding (for semantic search)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM files WHERE embedding IS NOT NULL ORDER BY processed_at DESC"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
