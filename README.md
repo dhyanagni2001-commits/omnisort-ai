@@ -1,28 +1,28 @@
 # OmniSort AI
 
-An AI-powered file organizer that watches multiple folders simultaneously and sorts every file into the right place — automatically. Define custom folders for your own categories (Bank, Tax, Work, ML Notes). Built privacy-first: sensitive files are detected locally and never sent to an external API.
+An AI-powered file organizer that watches multiple folders simultaneously and sorts every file into the right place — automatically. Define custom folders for your own categories (Bank, Tax, Work, ML Notes). Built privacy-first: sensitive files are detected locally and **never sent to an external API**.
 
 ---
 
 ## Privacy-first design
 
-> Medical records, tax documents, and contracts may contain SSNs, email addresses, or phone numbers. OmniSort detects PII **before** any LLM call — including in the filename itself. If a file contains sensitive data, it is classified entirely on-device and the content never leaves your machine.
+> Medical records, tax documents, and contracts may contain SSNs, email addresses, or phone numbers. OmniSort detects PII **before** any model or API call — including in the filename itself. If a file is sensitive, it is classified entirely on-device and the content never leaves your machine.
 
 ```
 Check filename for PII
-     │
-     ▼
-Extract text
-     │
-     ▼
-Check content for PII (on-device, regex)
-     │
-     ├── PII found (filename OR content) ──► Sensitive/   ← LLM never called
-     │
-     └── No PII ──► custom rules ──► keyword NLP ──► LLM fallback (only if needed)
+       │
+       ▼
+Extract text (OCR / PDF parser / plain read)
+       │
+       ▼
+Check content for PII  (on-device regex)
+       │
+       ├── PII found ──► Sensitive/   ← DistilBERT and LLM never called
+       │
+       └── No PII ──► custom rules ──► keyword NLP ──► DistilBERT ──► LLM (last resort)
 ```
 
-This is a hard guarantee, not a configuration option. The PII gate runs synchronously before any network call is attempted.
+This is a hard guarantee, not a configuration option. The PII gate runs synchronously before any model inference or network call is attempted.
 
 ---
 
@@ -32,13 +32,16 @@ Drop a file into any watched folder (`~/Downloads`, `~/Desktop`, `~/Documents`, 
 
 1. Waits until the file is fully written (not still downloading)
 2. **Checks the filename for PII** — catches `john_SSN_123456789.pdf` before it's even opened
-3. Extracts text — OCR for images, PDF parser for PDFs, **OCR fallback for scanned PDFs**
-4. **Checks content for PII** — emails, phone numbers, SSNs detected on-device
-5. **Runs custom rules** — your own keyword-to-folder mappings, free, no API call
-6. Classifies the file — keyword NLP, then GPT-4o-mini only if no rule matched and no PII
-7. Checks for duplicates — SHA-256 hash with per-hash lock preventing concurrent misses
-8. Moves the file — DB write only happens after the move succeeds
-9. Logs to SQLite and pushes a live WebSocket event to the dashboard
+3. Extracts text — OCR for images, PyPDF2 for PDFs, **OCR fallback for scanned PDFs** with no text layer
+4. **Checks content for PII** — emails, phone numbers, SSNs detected on-device via regex
+5. **Runs custom rules** — your own keyword-to-folder mappings, free, no model call
+6. **Keyword NLP** — instantly matches Invoices, Resumes, Legal
+7. **DistilBERT zero-shot** — catches Medical, Financial, Academic locally, no API cost
+8. **GPT-4o-mini fallback** — only called when all local stages are uncertain
+9. Checks for duplicates — SHA-256 hash with per-hash lock preventing concurrent misses
+10. Moves the file — DB write only happens after the move succeeds
+11. Generates a 384-dim embedding and stores it for semantic search
+12. Logs to SQLite and pushes a live WebSocket event to the dashboard
 
 ---
 
@@ -69,7 +72,7 @@ Drop a file into any watched folder (`~/Downloads`, `~/Desktop`, `~/Documents`, 
 └── Health/           ← matches "prescription", "blood report", "diagnosis"
 ```
 
-Routing priority: **Sensitive > Duplicate > Custom Rule > NLP/LLM Category**
+Routing priority: **Sensitive > Duplicate > Custom Rule > Keyword NLP > DistilBERT > LLM**
 
 ---
 
@@ -94,7 +97,7 @@ custom_rules:
 
 Rules match against **both the filename and the extracted text**. The first matching rule wins. Folders are created automatically if they don't exist.
 
-**Priority over built-in categories** — if a rule matches, NLP and the LLM are skipped entirely. Custom rules cost nothing.
+**Priority over built-in categories** — if a rule matches, DistilBERT and the LLM are skipped entirely. Custom rules cost nothing.
 
 **PII always wins** — a bank statement containing an SSN goes to `Sensitive/`, not `Bank/`.
 
@@ -106,47 +109,55 @@ Rules match against **both the filename and the extracted text**. The first matc
 ~/Downloads  ──┐
 ~/Desktop    ──┼── watchdog FSEvents (one observer per folder)
 ~/Documents  ──┘
-     │
-     ▼
+      │
+      ▼
 ThreadPoolExecutor (max 4 workers) ── caps concurrency, prevents thread explosion
-     │
-     ▼
+      │
+      ▼
 FileWatcher._process_file()
-     │
-     ├── _wait_for_file_ready()         size must stabilise before processing starts
-     │
-     ├── SensitiveDetector (filename)   PII check on filename BEFORE file is opened
-     │
-     ├── ImageClassifier                PIL resolution + filename patterns → Photos / Screenshots
-     │   └── OCRExtractor               pytesseract → text from images
-     │
-     ├── PDFProcessor                   PyPDF2 → text + metadata
-     │   └── empty text? ─────────────► OCRExtractor.extract_text_from_pdf_page()
-     │                                  PyMuPDF renders page → pytesseract (scanned PDFs)
-     ├── DocxProcessor                  python-docx → text
-     ├── TextProcessor                  plain read → text
-     │
-     ├── SensitiveDetector (content)    runs before any network call
-     │   └── PII found? ───────────────────────────────────────────────────► Sensitive/
-     │   └── No PII ──► continue
-     │
-     ├── RulesEngine                    user-defined keyword → folder mappings
-     │   └── rule matched? ────────────────────────────────────────────────► Custom folder/
-     │   └── no match ──► continue
-     │
-     ├── classify_document()            keyword NLP → Invoices / Resumes / Legal
-     │   └── still "Documents"? ──────► LLMClassifier (GPT-4o-mini)
-     │                                  → Medical / Financial / Academic / Other
-     │
-     ├── DuplicateDetector              SHA-256 + per-hash lock (atomic check + move + DB write)
-     ├── PolicyEngine                   sets is_sensitive / is_duplicate flags
-     │
-     ├── FileOrganizer                  shutil.move → OmniSort/<category>/
-     ├── db.insert_file()               DB write AFTER confirmed move — isolated try/except
-     │
-     ├── Metrics                        files/min, OCR failures, LLM calls, latency
-     │
-     └── event_queue  ──────────────────► FastAPI WebSocket ──► Electron dashboard
+      │
+      ├── _wait_for_file_ready()          size must stabilise before processing starts
+      │
+      ├── SensitiveDetector (filename)    PII check on filename BEFORE file is opened
+      │
+      ├── ImageClassifier                 PIL resolution + filename patterns → Photos / Screenshots
+      │   └── OCRExtractor                pytesseract → text from images
+      │
+      ├── PDFProcessor                    PyPDF2 → text + metadata
+      │   └── empty text? ──────────────► OCRExtractor.extract_text_from_pdf_page()
+      │                                   PyMuPDF renders page → pytesseract (scanned PDFs)
+      ├── DocxProcessor                   python-docx → text
+      ├── TextProcessor                   plain read → text
+      │
+      ├── SensitiveDetector (content)     runs before any model or network call
+      │   └── PII found? ────────────────────────────────────────────────────► Sensitive/
+      │   └── No PII ──► continue
+      │
+      ├── RulesEngine                     user-defined keyword → folder mappings
+      │   └── rule matched? ─────────────────────────────────────────────────► Custom folder/
+      │   └── no match ──► continue
+      │
+      ├── classify_document()             Stage 3: keyword NLP → Invoices / Resumes / Legal
+      │   └── still "Documents"?
+      │       │
+      │       ├── MLClassifier            Stage 3.5: DistilBERT zero-shot (local, no API)
+      │       │   └── confident result? ────────────────────────────────────► category/
+      │       │   └── uncertain ──► continue
+      │       │
+      │       └── LLMClassifier           Stage 4: GPT-4o-mini (last resort only)
+      │                                   → Medical / Financial / Academic / Other
+      │
+      ├── embed_text()                    fastembed 384-dim vector stored in SQLite
+      │
+      ├── DuplicateDetector               SHA-256 + per-hash lock (atomic check + move + DB write)
+      ├── PolicyEngine                    sets is_sensitive / is_duplicate flags
+      │
+      ├── FileOrganizer                   shutil.move → OmniSort/<category>/
+      ├── db.insert_file()                DB write AFTER confirmed move — isolated try/except
+      │
+      ├── Metrics                         files/min, OCR failures, LLM calls, latency
+      │
+      └── event_queue  ───────────────────► FastAPI WebSocket ──► Electron dashboard
 ```
 
 ---
@@ -163,11 +174,11 @@ FileWatcher._process_file()
 
 **Stage 0 — Filename PII gate (runs before file is opened)**
 
-Filename scanned for email, phone, SSN. A file named `john_SSN_123456789.pdf` goes to `Sensitive/` immediately — file is never read.
+Filename scanned for email, phone, SSN. A file named `john_SSN_123456789.pdf` goes to `Sensitive/` immediately — the file is never read.
 
-**Stage 1 — Content PII gate (on-device, before NLP/LLM)**
+**Stage 1 — Content PII gate (on-device, before any model call)**
 
-Extracted text scanned for the same patterns. Match → `Sensitive/`, `is_sensitive = 1`, no further network calls.
+Extracted text scanned for the same patterns. Match → `Sensitive/`, `is_sensitive = 1`, no further model or network calls.
 
 **Stage 1a — Scanned PDF OCR fallback**
 
@@ -175,7 +186,7 @@ If PyPDF2 returns empty text (image-only PDF), PyMuPDF renders the first page at
 
 **Stage 2 — Custom rules (on-device, zero latency, zero cost)**
 
-User-defined keyword mappings from `settings.yaml` are checked against filename + content. First match wins → file goes to the custom folder, NLP and LLM are skipped entirely.
+User-defined keyword mappings from `settings.yaml` checked against filename + content. First match wins → file goes to the custom folder, all remaining stages skipped.
 
 **Stage 3 — Keyword NLP (on-device, zero latency)**
 
@@ -185,9 +196,23 @@ User-defined keyword mappings from `settings.yaml` are checked against filename 
 | `resume`, `curriculum vitae`, `work experience`, `references` | Resumes |
 | `contract`, `agreement`, `terms and conditions`, `whereas` | Legal |
 
+**Stage 3.5 — DistilBERT zero-shot classifier (local ML, no API cost)**
+
+Uses `typeform/distilbert-base-uncased-mnli` (~260 MB, downloads on first use). Scores seven natural-language candidate labels as NLI entailment hypotheses against the document text. Returns a category when confidence exceeds 50%, otherwise falls through to Stage 4.
+
+Catches the categories keyword NLP misses most:
+
+| Category | Why keywords fail | Why DistilBERT works |
+|---|---|---|
+| Medical | "blood report" varies widely | Understands semantic meaning |
+| Financial | Bank statements rarely say "financial" | NLI scores "financial document" as entailment |
+| Academic | No fixed vocabulary | Semantic similarity to "research paper" |
+
+Runs entirely on CPU (~50 ms/doc). Degrades gracefully — returns `None` when torch is unavailable (Python 3.13 dev env), and Stage 4 takes over.
+
 **Stage 4 — LLM fallback (GPT-4o-mini)**
 
-Only reached when Stages 0–3 all passed without a match. Sends first 2 000 characters, returns one of:
+Only reached when Stages 0–3.5 all passed without a confident match. Sends first 2,000 characters. Returns one of:
 
 `Medical` · `Financial` · `Academic` · `Documents` · `Other`
 
@@ -203,7 +228,7 @@ PII is checked in two places — filename first, then content.
 | Phone | `555-867-5309` |
 | SSN | `123-45-6789` |
 
-Detection runs via `re` — no model, no network, no latency. A match in either the filename or extracted text triggers the PII gate and prevents any LLM call.
+Detection runs via `re` — no model, no network, no latency. A match in either the filename or extracted text triggers the PII gate and prevents all downstream model calls.
 
 ---
 
@@ -226,17 +251,18 @@ The DB write is isolated in its own `try/except` — if it fails, the already-so
 | PDF parsing | `PyPDF2` |
 | Scanned PDF OCR | `PyMuPDF` — renders pages to images for pytesseract |
 | DOCX parsing | `python-docx` |
-| PII detection | `re` — on-device regex on filename + content, before any network call |
+| PII detection | `re` — on-device regex on filename + content, before any model call |
 | Custom rules | Keyword engine — user-defined folder mappings, zero cost |
-| NLP classification | Keyword matching — zero-dependency, zero-latency |
-| LLM classification | OpenAI `gpt-4o-mini` — only for non-sensitive, unmatched files |
+| Keyword NLP | Keyword matching — zero-dependency, zero-latency (Stage 3) |
+| ML classifier | `transformers` DistilBERT zero-shot NLI — local, no API cost (Stage 3.5) |
+| LLM classifier | OpenAI `gpt-4o-mini` — last resort only, never called for sensitive files (Stage 4) |
 | Semantic search | `fastembed` (ONNX, BAAI/bge-small-en-v1.5) — 384-dim embeddings, cosine similarity |
 | Duplicate detection | SHA-256 + per-hash threading lock |
-| Observability | In-process metrics singleton (`metrics.py`) |
+| Observability | In-process metrics singleton — files/min, latency, LLM calls, duplicate rate |
 | Database | SQLite via `sqlite3` |
 | REST + WebSocket API | `FastAPI` + `uvicorn` |
 | Desktop UI | Electron (Node.js) |
-| Docker | Single-container image, volume mounts for watch/output folders |
+| Docker | `python:3.11-slim` + CPU-only torch, volume mounts for watch/output folders |
 
 ---
 
@@ -249,8 +275,9 @@ omnisort-ai/
 │   ├── watcher/
 │   │   └── file_watcher.py              core orchestrator (watchdog + thread pool)
 │   ├── classifier/
-│   │   ├── image_classifier.py          PIL classifier + keyword NLP
-│   │   └── llm_classifier.py            GPT-4o-mini fallback (PII-gated)
+│   │   ├── image_classifier.py          PIL classifier + keyword NLP (Stage 3)
+│   │   ├── ml_classifier.py             DistilBERT zero-shot NLI (Stage 3.5)
+│   │   └── llm_classifier.py            GPT-4o-mini fallback (Stage 4, PII-gated)
 │   ├── rules/
 │   │   └── rules_engine.py              user-defined keyword → folder rules
 │   ├── ocr/
@@ -276,7 +303,7 @@ omnisort-ai/
 │   ├── api/
 │   │   └── api.py                       FastAPI — /health /stats /files /metrics /search /ws
 │   └── logger/
-│       └── logger.py                    file logger
+│       └── logger.py                    file + stdout logger
 ├── electron-app/
 │   ├── main.js                          Electron main — spawns Python backend
 │   ├── app.html                         dashboard UI
@@ -286,9 +313,9 @@ omnisort-ai/
 ├── tests/
 │   ├── test_classifier.py               16 unit tests — image + document classifier
 │   └── test_watcher.py                  28 integration tests — full pipeline + custom rules
-├── Dockerfile
-├── docker-compose.yml
-├── DEMO.md
+├── Dockerfile                           python:3.11-slim + tesseract + CPU torch
+├── docker-compose.yml                   volume mounts, env var overrides
+├── DEMO.md                              step-by-step walkthrough with exact commands
 └── backend/requirements.txt
 ```
 
@@ -298,7 +325,7 @@ omnisort-ai/
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (3.11 recommended — required for DistilBERT / Docker)
 - Node.js 18+
 - Tesseract OCR
 
@@ -316,6 +343,8 @@ sudo apt install tesseract-ocr
 cd omnisort-ai
 pip install -r backend/requirements.txt
 ```
+
+> **Note:** `torch` and `transformers` (for the DistilBERT stage) require Python ≤ 3.12. On Python 3.13, those packages are skipped and the DistilBERT stage degrades gracefully — all other features work normally. Use Docker or a Python 3.11 environment to run the full pipeline.
 
 ### Install Electron dependencies
 
@@ -337,7 +366,7 @@ echo 'export OPENAI_API_KEY="sk-..."' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-> The key is only used when a file reaches Stage 4 — non-sensitive, unmatched, ambiguous documents only.
+> The key is only used at Stage 4 — non-sensitive, ambiguous documents that keyword NLP and DistilBERT both failed to classify confidently.
 
 ---
 
@@ -366,6 +395,14 @@ npm start
 
 Electron spawns the Python backend automatically and opens the dashboard.
 
+### Docker (full pipeline including DistilBERT)
+
+```bash
+OPENAI_API_KEY=sk-... WATCH_FOLDER=~/Downloads docker-compose up
+```
+
+Docker runs Python 3.11 so the DistilBERT classifier is fully active. The DistilBERT model (~260 MB) downloads on first run and is cached inside the container.
+
 ---
 
 ## Dashboard
@@ -391,7 +428,7 @@ All endpoints served at `http://127.0.0.1:8000`.
 | `GET` | `/api/files?limit=50&offset=0` | Paginated file history |
 | `GET` | `/api/metrics` | Runtime observability snapshot |
 | `GET` | `/api/search?q=...&limit=10` | Semantic search over processed files |
-| `WS` | `/ws` | Live event stream (JSON) |
+| `WS`  | `/ws` | Live event stream (JSON) |
 
 ### `/api/metrics` response
 
@@ -400,7 +437,7 @@ All endpoints served at `http://127.0.0.1:8000`.
   "files_per_min": 4,
   "total_files": 37,
   "ocr_failures": 1,
-  "llm_calls": 12,
+  "llm_calls": 3,
   "avg_classification_ms": 843.21,
   "avg_llm_ms": 712.50,
   "duplicates": 3,
@@ -424,15 +461,13 @@ All endpoints served at `http://127.0.0.1:8000`.
 
 ## Semantic search
 
-Every processed text document gets a 384-dimensional embedding stored in SQLite (BAAI/bge-small-en-v1.5 via `fastembed`, ONNX runtime — no PyTorch, works on Python 3.11+).
+Every processed text document gets a 384-dimensional embedding stored in SQLite (BAAI/bge-small-en-v1.5 via `fastembed`, ONNX runtime — no PyTorch required).
 
 ```bash
 curl "localhost:8000/api/search?q=quarterly+revenue+report&limit=5"
 ```
 
-Returns files ranked by cosine similarity to your query — finds the right document even when the filename is `final_FINAL_v3.pdf`. Images and binary-only files without extractable text degrade gracefully (no embedding stored, excluded from results).
-
-Sensitive files are still searched locally — their embeddings are stored the same way since the model runs on-device.
+Returns files ranked by cosine similarity — finds the right document even when the filename is `final_FINAL_v3.pdf`. Files without extractable text (images, video, audio) are excluded from results gracefully.
 
 ---
 
@@ -485,7 +520,7 @@ AirDrop writes a `.part` temp file then renames it to the final name. OmniSort c
 | Dot-file filter (`.DS_Store`, `.com.brave.*`) | macOS metadata and browser internal files |
 | Output folder filter | OmniSort's own `shutil.move` re-triggering the watcher |
 | PII gate on filename before file is opened | Sensitive filenames caught before content is read |
-| PII gate on content before LLM call | Sensitive content never sent to an external API |
+| PII gate on content before any model call | Sensitive content never sent to DistilBERT or OpenAI |
 
 ---
 
@@ -501,7 +536,7 @@ watch_folders:            # folders to monitor — add as many as you need
 
 output_folder: ~/Downloads/OmniSort
 
-custom_rules:             # keyword → folder mappings, checked before NLP/LLM
+custom_rules:             # keyword → folder mappings, checked before NLP/ML/LLM
   - folder: Bank
     keywords: ["bank statement", "account number", "HDFC", "ICICI", "SBI"]
   - folder: Tax
@@ -533,7 +568,7 @@ tests/test_watcher.py      — 28 tests   (full pipeline + custom rules)
 44 tests, 0 failures
 ```
 
-Integration tests cover: image sorting, screenshot detection, PDF → Invoices / Resumes / Documents, TXT, unsupported → Other, PII detection → Sensitive, PII overrides custom rule, custom rule → custom folder, duplicate detection, concurrent deduplication, DB record creation, SHA-256 storage, output-folder re-processing guard.
+Integration tests cover: image sorting, screenshot detection by filename and resolution, PDF → Invoices / Resumes / Documents, TXT, unsupported extension → Other, PII detection → Sensitive, PII overrides custom rule, custom rule → custom folder, duplicate detection, concurrent deduplication race condition, DB record creation, SHA-256 storage, output-folder re-processing guard.
 
 ---
 
