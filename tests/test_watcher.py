@@ -68,9 +68,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", str(db_path))
     db.init_db()
 
-    # Prevent model download during tests — embeddings degrade gracefully to []
+    # Prevent model downloads during tests — both degrade gracefully
     import backend.embeddings.embedding as _emb
     monkeypatch.setattr(_emb, "embed_text", lambda text: [])
+
+    import backend.classifier.ml_classifier as _ml
+    monkeypatch.setattr(_ml, "_get_pipeline", lambda: None)
 
     # Build watcher pointed at our temp dirs
     watcher = FileWatcher.__new__(FileWatcher)
@@ -103,12 +106,14 @@ def env(tmp_path, monkeypatch):
     from backend.logger.logger import Logger
 
     from backend.rules.rules_engine import RulesEngine
+    from backend.classifier.ml_classifier import MLClassifier
 
     class _StubLLMClassifier:
         def classify(self, text):
             return "Documents"
 
     watcher.image_classifier = ImageClassifier()
+    watcher.ml_classifier = MLClassifier()
     watcher.rules_engine = RulesEngine([])
     watcher.llm_classifier = _StubLLMClassifier()
     watcher.ocr_extractor = OCRExtractor()

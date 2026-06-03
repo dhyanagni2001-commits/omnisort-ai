@@ -11,6 +11,7 @@ from watchdog.events import FileSystemEventHandler
 
 from backend.classifier.image_classifier import ImageClassifier, classify_document
 from backend.classifier.llm_classifier import LLMClassifier
+from backend.classifier.ml_classifier import MLClassifier
 from backend.rules.rules_engine import RulesEngine
 from backend.ocr.ocr_extractor import OCRExtractor
 from backend.processor.pdf_process import PDFProcessor
@@ -100,6 +101,7 @@ class FileWatcher:
 
         self.image_classifier = ImageClassifier()
         self.llm_classifier = LLMClassifier()
+        self.ml_classifier = MLClassifier()
         self.rules_engine = RulesEngine(self.config.get("custom_rules", []))
         self.ocr_extractor = OCRExtractor(self.config.get("tesseract_path", "/usr/local/bin/tesseract"))
         self.pdf_processor = PDFProcessor()
@@ -272,6 +274,12 @@ class FileWatcher:
                     else:
                         category = classify_document(text)
                         if category == "Documents" and not sensitive_info:
+                            # Stage 3.5 — DistilBERT zero-shot (local, no API cost)
+                            ml_result = self.ml_classifier.classify(text)
+                            if ml_result:
+                                category = ml_result
+                        if category == "Documents" and not sensitive_info:
+                            # Stage 4 — LLM fallback (only if ML also uncertain)
                             _llm_start = time.perf_counter()
                             category = self.llm_classifier.classify(text)
                             metrics.record_llm_call((time.perf_counter() - _llm_start) * 1000)
