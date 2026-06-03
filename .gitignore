@@ -19,3 +19,4 @@ electron-app/package-lock.json
 # macOS
 .DS_Store
 *.pdf
+CLAUDE.md
