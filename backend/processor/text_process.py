@@ -1,6 +1,12 @@
-# backend/processor/text_processor.py
+# Plain text reader for .txt, .csv, and .md files.
+
+
 class TextProcessor:
+    """Reads a text file and returns its full contents as a string."""
+
     def process(self, file_path):
+        """Opens the file in text mode, reads everything, and strips whitespace.
+        Raises ValueError on read error."""
         try:
             with open(file_path, "r") as file:
                 text = file.read()

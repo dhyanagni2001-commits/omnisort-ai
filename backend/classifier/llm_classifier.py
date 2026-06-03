@@ -1,6 +1,10 @@
+# Stage 4 (last resort) classifier — calls GPT-4o-mini only when all local stages
+# returned "Documents" and no PII was found. Never called for sensitive files.
+
 import os
 from openai import OpenAI
 
+# All valid outputs. Anything else from the model is treated as "Documents".
 CATEGORIES = [
     "Invoices",
     "Resumes",
@@ -12,6 +16,7 @@ CATEGORIES = [
     "Other",
 ]
 
+# System prompt constrains the model to a single category word with no explanation.
 _SYSTEM_PROMPT = (
     "You are a file classification assistant. "
     "Given the extracted text from a document, classify it into exactly one of these categories:\n"
@@ -31,11 +36,14 @@ _SYSTEM_PROMPT = (
 
 
 class LLMClassifier:
+    """Calls GPT-4o-mini to classify ambiguous documents that keyword NLP and DistilBERT missed."""
+
     def __init__(self):
+        # API key is read from the environment so it is never hardcoded.
         self._client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     def classify(self, text: str) -> str:
-        """Return one of CATEGORIES for the given document text."""
+        # Trim to 2,000 chars — enough context for classification, cheap on tokens.
         snippet = text[:2000].strip()
         if not snippet:
             return "Documents"
@@ -43,13 +51,15 @@ class LLMClassifier:
         try:
             response = self._client.chat.completions.create(
                 model="gpt-4o-mini",
-                max_tokens=16,
+                max_tokens=16,  # One word is all we need.
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Document text:\n\n{snippet}"},
+                    {"role": "user",   "content": f"Document text:\n\n{snippet}"},
                 ],
             )
             result = response.choices[0].message.content.strip()
+            # Reject any response that isn't in the known list.
             return result if result in CATEGORIES else "Documents"
         except Exception:
+            # Network errors, quota exhaustion, etc. all fall back to "Documents".
             return "Documents"
